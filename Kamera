@@ -1,0 +1,1807 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover" />
+<meta name="theme-color" content="#0b0f14" />
+<title>Kamera Çeviri · Lens</title>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.4/dist/tesseract.min.js"></script>
+<style>
+  :root{
+    --bg:#0b0f14; --panel:#141a22; --panel-2:#1c232c;
+    --border:#2a3441; --text:#e8eef6; --muted:#8ea0b5;
+    --accent:#4ea1ff; --accent-2:#2b7fe0; --danger:#ff5b6e;
+    --ok:#37d67a; --warn:#ffb020;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    overscroll-behavior:none;height:100%;width:100%;}
+  body{position:fixed;inset:0;overflow:hidden;}
+  button,select,input{font-family:inherit;}
+
+  #app{position:absolute;inset:0;display:flex;flex-direction:column;}
+
+  /* ---------------- Kamera ---------------- */
+  #cameraContainer{position:absolute;inset:0;background:#000;overflow:hidden;}
+  #video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000;
+    will-change:transform;transform-origin:center center;}
+  #video.mirrored{transform:scaleX(-1);}
+  #placeholder{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    flex-direction:column;gap:10px;color:var(--muted);text-align:center;padding:20px;
+    font-size:14px;z-index:5;}
+  #placeholder .icon{font-size:44px;}
+
+  /* OCR bölge kutusu */
+  #ocrRegionBox{position:absolute;border:2px dashed rgba(78,161,255,.9);
+    border-radius:10px;box-shadow:0 0 0 9999px rgba(0,0,0,.35);
+    pointer-events:auto;display:none;z-index:8;touch-action:none;}
+  #ocrRegionBox.active{display:block;}
+  #ocrRegionBox.noDim{box-shadow:none;}
+  #ocrRegionBox .corner{position:absolute;width:20px;height:20px;background:var(--accent);
+    border-radius:4px;box-shadow:0 0 6px rgba(0,0,0,.6);}
+  #ocrRegionBox .corner.tl{left:-10px;top:-10px;cursor:nwse-resize;touch-action:none;}
+  #ocrRegionBox .corner.tr{right:-10px;top:-10px;cursor:nesw-resize;touch-action:none;}
+  #ocrRegionBox .corner.bl{left:-10px;bottom:-10px;cursor:nesw-resize;touch-action:none;}
+  #ocrRegionBox .corner.br{right:-10px;bottom:-10px;cursor:nwse-resize;touch-action:none;}
+  #ocrRegionBox .label{position:absolute;top:-24px;left:0;font-size:11px;color:var(--accent);
+    background:rgba(0,0,0,.5);padding:2px 6px;border-radius:6px;}
+
+  /* Overlay katmanı */
+  #overlayLayer{position:absolute;inset:0;pointer-events:none;z-index:7;overflow:hidden;}
+
+  /* Google Lens tarzı çeviri kutusu (orijinali kapatan) */
+  .transBox{
+    position:absolute;
+    background:rgba(8,12,18,.86);
+    color:#fff;
+    border-radius:6px;
+    padding:4px 8px;
+    font-weight:700;
+    letter-spacing:.1px;
+    text-shadow:0 1px 2px rgba(0,0,0,.9);
+    box-shadow:0 4px 14px rgba(0,0,0,.55), inset 0 0 0 1px rgba(78,161,255,.35);
+    backdrop-filter:blur(6px) saturate(1.05);
+    -webkit-backdrop-filter:blur(6px) saturate(1.05);
+    display:flex;align-items:center;justify-content:flex-start;
+    line-height:1.15;
+    overflow:hidden;
+    word-break:break-word;
+    transition:opacity .16s ease, transform .16s ease, left .14s linear, top .14s linear,
+               width .14s linear, height .14s linear;
+    will-change:left,top,width,height,transform;
+    opacity:0;
+    transform:scale(.98);
+  }
+  .transBox.show{opacity:1;transform:scale(1);}
+  .transBox.fresh{animation:fadeInBox .22s ease;}
+  @keyframes fadeInBox{from{opacity:0;transform:scale(.9);}to{opacity:1;transform:scale(1);}}
+
+  .transBox .trText{width:100%;}
+
+  /* Orijinal metin etiketi (showOriginal açıkken) */
+  .origTag{
+    position:absolute;
+    background:rgba(78,161,255,.22);
+    color:#d7ecff;
+    border-radius:6px;
+    padding:2px 6px;
+    font-size:11px;
+    line-height:1.15;
+    font-weight:500;
+    border:1px solid rgba(78,161,255,.4);
+    backdrop-filter:blur(3px);
+    -webkit-backdrop-filter:blur(3px);
+    pointer-events:none;
+    transition:opacity .16s ease, left .14s linear, top .14s linear;
+    opacity:0;
+    z-index:2;
+  }
+  .origTag.show{opacity:1;}
+
+  /* Durum */
+  #statusBadge{position:absolute;left:50%;top:64px;transform:translateX(-50%);
+    background:rgba(11,15,20,.85);border:1px solid var(--border);border-radius:20px;
+    padding:6px 14px;font-size:12px;color:var(--text);display:none;z-index:12;
+    align-items:center;gap:8px;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);}
+  #statusBadge.show{display:inline-flex;}
+  #statusBadge .dot{width:8px;height:8px;border-radius:50%;background:var(--accent);
+    animation:pulse 1s infinite ease-in-out;}
+  @keyframes pulse{0%,100%{opacity:.4;}50%{opacity:1;}}
+
+  /* Hata */
+  #errorBanner{position:absolute;left:12px;right:12px;top:64px;
+    background:rgba(255,91,110,.94);color:#fff;padding:10px 14px;border-radius:10px;
+    font-size:13px;z-index:20;display:none;box-shadow:0 6px 18px rgba(0,0,0,.4);}
+  #errorBanner.show{display:block;}
+  #errorBanner .close{float:right;background:none;border:0;color:#fff;font-size:16px;
+    margin-left:8px;cursor:pointer;}
+
+  /* Üst bar */
+  #topBar{position:absolute;top:0;left:0;right:0;
+    padding:calc(env(safe-area-inset-top,0px) + 8px) 12px 8px 12px;
+    display:flex;align-items:center;justify-content:space-between;
+    background:linear-gradient(180deg,rgba(0,0,0,.7),rgba(0,0,0,0));
+    z-index:10;pointer-events:none;}
+  #topBar .title{font-weight:700;font-size:15px;letter-spacing:.3px;color:#fff;
+    text-shadow:0 1px 3px rgba(0,0,0,.7);pointer-events:auto;}
+  #topBar .actions{display:flex;gap:8px;pointer-events:auto;}
+  .iconBtn{background:rgba(20,26,34,.85);color:var(--text);border:1px solid var(--border);
+    border-radius:10px;width:38px;height:38px;display:flex;align-items:center;
+    justify-content:center;font-size:16px;cursor:pointer;
+    backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);}
+  .iconBtn:active{transform:scale(.96);}
+  .iconBtn:disabled{opacity:.4;}
+
+  /* Alt bar */
+  #bottomBar{position:absolute;left:0;right:0;bottom:0;
+    padding:10px 12px calc(env(safe-area-inset-bottom,0px) + 10px) 12px;
+    background:linear-gradient(0deg,rgba(0,0,0,.78),rgba(0,0,0,0));
+    z-index:10;display:flex;flex-direction:column;gap:8px;}
+  .barRow{display:flex;gap:8px;align-items:center;}
+  .barRow.wrap{flex-wrap:wrap;}
+
+  .btn{flex:1;background:var(--panel);color:var(--text);border:1px solid var(--border);
+    border-radius:12px;padding:11px 12px;font-size:13px;font-weight:600;cursor:pointer;
+    white-space:nowrap;min-width:0;display:flex;align-items:center;justify-content:center;gap:6px;}
+  .btn:active{transform:scale(.98);}
+  .btn.primary{background:var(--accent-2);border-color:var(--accent-2);color:#fff;}
+  .btn.primary:disabled{opacity:.55;cursor:not-allowed;}
+  .btn.danger{background:#3a1b22;border-color:#632937;color:#ffb6c0;}
+  .btn.ok{background:#16351f;border-color:#225c33;color:#a9f0c0;}
+  .btn.ghost{background:rgba(20,26,34,.85);}
+
+  .selectWrap{flex:1;display:flex;flex-direction:column;gap:2px;min-width:0;}
+  .selectWrap label{font-size:10px;color:var(--muted);padding-left:4px;}
+  .selectWrap select{width:100%;background:rgba(20,26,34,.9);color:var(--text);
+    border:1px solid var(--border);border-radius:10px;padding:9px 10px;font-size:13px;
+    outline:none;appearance:none;-webkit-appearance:none;
+    background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),
+                     linear-gradient(135deg,var(--muted) 50%,transparent 50%);
+    background-position:calc(100% - 16px) 50%,calc(100% - 11px) 50%;
+    background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:28px;}
+
+  /* Paneller */
+  .sheet{position:absolute;left:0;right:0;bottom:0;background:var(--panel);
+    border-top-left-radius:18px;border-top-right-radius:18px;border:1px solid var(--border);
+    border-bottom:0;padding:14px 14px calc(env(safe-area-inset-bottom,0px) + 14px) 14px;
+    z-index:30;transform:translateY(110%);transition:transform .25s ease;
+    max-height:70vh;overflow-y:auto;box-shadow:0 -12px 30px rgba(0,0,0,.6);}
+  .sheet.open{transform:translateY(0);}
+  .sheet h3{margin:0 0 10px 0;font-size:14px;}
+  .sheet .row{display:flex;gap:8px;align-items:center;margin-bottom:10px;}
+  .sheet .row label{font-size:12px;color:var(--muted);flex:1;}
+  .sheet .row select,.sheet .row input[type=range]{flex:1.4;}
+  .sheet .closeBtn{position:absolute;top:10px;right:12px;background:none;border:0;
+    color:var(--muted);font-size:22px;cursor:pointer;}
+
+  .resultItem{background:var(--panel-2);border:1px solid var(--border);border-radius:10px;
+    padding:10px 12px;margin-bottom:8px;font-size:13px;}
+  .resultItem .orig{color:var(--muted);font-size:11px;margin-bottom:4px;word-break:break-word;}
+  .resultItem .tr{color:var(--text);font-weight:600;word-break:break-word;}
+
+  .switchRow{display:flex;align-items:center;justify-content:space-between;
+    padding:10px 0;border-bottom:1px solid var(--border);}
+  .switchRow:last-child{border-bottom:0;}
+  .switchRow .lbl{font-size:13px;}
+  .switch{position:relative;width:46px;height:26px;background:#2a3441;border-radius:20px;
+    transition:.2s;cursor:pointer;flex-shrink:0;}
+  .switch::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;
+    background:#fff;border-radius:50%;transition:.2s;}
+  .switch.on{background:var(--accent-2);}
+  .switch.on::after{left:23px;}
+
+  .toast{position:absolute;left:50%;bottom:100px;transform:translateX(-50%);
+    background:rgba(20,26,34,.95);color:var(--text);border:1px solid var(--border);
+    padding:8px 14px;border-radius:20px;font-size:12px;z-index:40;opacity:0;
+    transition:opacity .2s;pointer-events:none;}
+  .toast.show{opacity:1;}
+
+  @media (max-height:640px){
+    .btn{padding:9px 10px;font-size:12px;}
+    #ocrRegionBox{min-width:60px;min-height:44px;}
+  }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <div id="cameraContainer">
+    <video id="video" playsinline autoplay muted></video>
+    <div id="placeholder">
+      <div class="icon">📷</div>
+      <div>Kamera kapalı.<br>Başlatmak için aşağıdaki “Başlat” butonuna dokunun.</div>
+    </div>
+
+    <div id="ocrRegionBox" aria-hidden="true">
+      <div class="label">OCR Alanı</div>
+      <div class="corner tl" data-corner="tl"></div>
+      <div class="corner tr" data-corner="tr"></div>
+      <div class="corner bl" data-corner="bl"></div>
+      <div class="corner br" data-corner="br"></div>
+    </div>
+
+    <div id="overlayLayer"></div>
+
+    <div id="statusBadge"><span class="dot"></span><span id="statusText">Hazır</span></div>
+
+    <div id="errorBanner">
+      <button class="close" id="errClose">×</button>
+      <span id="errText"></span>
+    </div>
+  </div>
+
+  <div id="topBar">
+    <div class="title">Kamera Çeviri</div>
+    <div class="actions">
+      <button class="iconBtn" id="switchCamBtn" title="Kamera değiştir" disabled>🔄</button>
+      <button class="iconBtn" id="settingsBtn" title="Ayarlar">⚙️</button>
+    </div>
+  </div>
+
+  <div id="bottomBar">
+    <div class="barRow">
+      <button class="btn primary" id="startStopBtn">Başlat</button>
+      <button class="btn" id="scanNowBtn" disabled>Şimdi Tara</button>
+    </div>
+    <div class="barRow">
+      <button class="btn ghost" id="toggleLiveBtn">Canlı: Kapalı</button>
+      <button class="btn ghost" id="regionToggleBtn">Alan: Orta</button>
+      <button class="btn ghost" id="resultsBtn">Sonuçlar</button>
+    </div>
+    <div class="barRow wrap">
+      <div class="selectWrap">
+        <label>Kaynak Dil</label>
+        <select id="sourceLang">
+          <option value="eng" data-iso="en">İngilizce</option>
+          <option value="tur" data-iso="tr">Türkçe</option>
+          <option value="deu" data-iso="de">Almanca</option>
+          <option value="fra" data-iso="fr">Fransızca</option>
+          <option value="spa" data-iso="es">İspanyolca</option>
+          <option value="jpn" data-iso="ja">Japonca</option>
+          <option value="kor" data-iso="ko">Korece</option>
+          <option value="chi_sim" data-iso="zh">Çince (Basit)</option>
+        </select>
+      </div>
+      <div class="selectWrap">
+        <label>Hedef Dil</label>
+        <select id="targetLang">
+          <option value="tr">Türkçe</option>
+          <option value="en">İngilizce</option>
+          <option value="de">Almanca</option>
+          <option value="fr">Fransızca</option>
+          <option value="es">İspanyolca</option>
+          <option value="ja">Japonca</option>
+          <option value="ko">Korece</option>
+          <option value="zh">Çince (Basit)</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <!-- Ayarlar -->
+  <div class="sheet" id="settingsSheet">
+    <button class="closeBtn" data-close="settingsSheet">×</button>
+    <h3>Ayarlar</h3>
+    <div class="switchRow"><div class="lbl">Çeviri kutularını göster</div><div class="switch on" id="swOverlay"></div></div>
+    <div class="switchRow"><div class="lbl">Orijinal metni de göster</div><div class="switch" id="swOriginal"></div></div>
+    <div class="switchRow"><div class="lbl">OCR ön işleme</div><div class="switch on" id="swPreprocess"></div></div>
+    <div class="switchRow"><div class="lbl">Alan dışını karart</div><div class="switch on" id="swDim"></div></div>
+    <div class="switchRow"><div class="lbl">Ön kamerayı aynala</div><div class="switch on" id="swMirror"></div></div>
+    <div class="row" style="margin-top:12px;">
+      <label>OCR modu</label>
+      <select id="ocrModeSelect">
+        <option value="region">Sadece OCR alanı</option>
+        <option value="full">Tüm ekranı tara</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>Tarama aralığı (sn)</label>
+      <select id="intervalSelect">
+        <option value="1.5">1.5</option>
+        <option value="2.5">2.5</option>
+        <option value="4">4</option>
+        <option value="6">6</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>Min. güven</label>
+      <input type="range" id="confRange" min="0" max="90" step="5" value="45" />
+      <span id="confVal" style="font-size:12px;color:var(--muted);width:28px;text-align:right;">45</span>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.5;">
+      MyMemory API üzerinden çeviri yapılır (anahtarsız). Limitler aşılırsa çeviri geçici olarak durabilir.
+      Kamera erişimi için HTTPS veya localhost gerekir.
+    </div>
+  </div>
+
+  <!-- Sonuçlar -->
+  <div class="sheet" id="resultsSheet">
+    <button class="closeBtn" data-close="resultsSheet">×</button>
+    <h3>Sonuçlar</h3>
+    <div id="resultsList"></div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+</div>
+
+<script>
+(function(){
+  'use strict';
+
+  /* =========================================================
+   * 0) YARDIMCI & SABİTLER
+   * ========================================================= */
+  const CONFIG = {
+    ocrMinTextLength: 2,
+    frameDiffThreshold: 6,          // küçük farklar eşik
+    forcedRescanMs: 4500,           // zorla yeni tarama süresi
+    translateMaxLen: 480,
+    translationCacheMax: 250,
+    ocrScaleTarget: 1100,
+    minScanInterval: 800,
+    boxSmoothTolerance: 6,          // px: bu kadar küçük değişim yumuşatılır
+  };
+
+  const LANG_NAMES = {
+    eng:'İngilizce', tur:'Türkçe', deu:'Almanca', fra:'Fransızca',
+    spa:'İspanyolca', jpn:'Japonca', kor:'Korece', chi_sim:'Çince (Basit)'
+  };
+
+  /* Normalize edilmiş metin: karşılaştırma/cache için */
+  function normalizeText(t){
+    if(!t) return '';
+    return t
+      .toLowerCase()
+      .replace(/\s+/g,' ')
+      .replace(/[^\p{L}\p{N} ]/gu,'')
+      .trim();
+  }
+
+  function cleanOCRText(t){
+    if(!t) return '';
+    return t
+      .replace(/[\u0000-\u001F\u007F]+/g,' ')
+      .replace(/[|_`~^]+/g,' ')
+      .replace(/\s+/g,' ')
+      .replace(/^[\s\p{P}]+|[\s\p{P}]+$/gu,'')
+      .trim();
+  }
+
+  function looksLikeGarbage(t){
+    if(!t) return true;
+    if(t.length < CONFIG.ocrMinTextLength) return true;
+    const letters = (t.match(/[\p{L}]/gu)||[]).length;
+    const digits  = (t.match(/\d/g)||[]).length;
+    if(letters === 0 && digits < 3) return true;
+    const noise = (t.match(/[^\p{L}\p{N}\s.,!?'"\-:;()/]/gu)||[]).length;
+    if(noise > letters + digits) return true;
+    return false;
+  }
+
+  /* Basit string hash — overlay ID */
+  function strHash(str){
+    let h = 5381;
+    for(let i=0;i<str.length;i++){
+      h = ((h << 5) + h + str.charCodeAt(i)) | 0;
+    }
+    return (h >>> 0).toString(36);
+  }
+
+  function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+
+  /* =========================================================
+   * 1) AYARLAR (localStorage)
+   * ========================================================= */
+  const SettingsMgr = (function(){
+    const KEY = 'camTranslate.settings.v2';
+    const DEFAULTS = {
+      sourceLang: 'eng',
+      sourceIso: 'en',
+      targetIso: 'tr',
+      ocrMode: 'region',
+      liveMode: false,
+      showOverlay: true,
+      showOriginal: false,
+      preprocess: true,
+      dimOutside: true,
+      mirrorFront: true,
+      intervalSec: 2.5,
+      minConfidence: 45,
+      region: { xPct: 0.15, yPct: 0.39, wPct: 0.70, hPct: 0.22 }
+    };
+    function load(){
+      try{
+        const raw = localStorage.getItem(KEY);
+        if(!raw) return { ...DEFAULTS, region: { ...DEFAULTS.region } };
+        const p = JSON.parse(raw);
+        return {
+          ...DEFAULTS, ...p,
+          region: { ...DEFAULTS.region, ...(p.region||{}) }
+        };
+      }catch(_){ return { ...DEFAULTS, region: { ...DEFAULTS.region } }; }
+    }
+    function save(s){
+      try{
+        const out = {
+          sourceLang: s.sourceLang, sourceIso: s.sourceIso, targetIso: s.targetIso,
+          ocrMode: s.ocrMode, liveMode: s.liveMode,
+          showOverlay: s.showOverlay, showOriginal: s.showOriginal,
+          preprocess: s.preprocess, dimOutside: s.dimOutside,
+          mirrorFront: s.mirrorFront, intervalSec: s.intervalSec,
+          minConfidence: s.minConfidence, region: s.region
+        };
+        localStorage.setItem(KEY, JSON.stringify(out));
+      }catch(_){}
+    }
+    return { load, save, DEFAULTS };
+  })();
+
+  /* =========================================================
+   * 2) MERKEZİ STATE
+   * ========================================================= */
+  const S = Object.assign({
+    // Kamera
+    stream: null,
+    facingMode: 'environment',
+    cameraOn: false,
+    isMirrored: false,
+
+    // OCR
+    ocrStatus: 'idle',            // idle | loading | recognizing | translating | done | error
+    worker: null,
+    workerLang: null,
+    workerPromise: null,
+
+    // Tarama
+    scanTimer: null,
+    lastScanAt: 0,
+    lastForcedScanAt: 0,
+    lastFrameSig: null,
+    liveMode: false,
+
+    // Cache
+    translationCache: new Map(),   // 'src|tgt|normalizedText' → translated
+    textStabilityMap: new Map(),   // normalizedText → { translated, ts, lastSeen }
+
+    // Overlay
+    overlayItems: new Map(),       // id → { el, origEl, lastSeen, text, rect }
+
+    // Sonuçlar
+    currentResults: [],
+
+    // Canvas
+    ocrCanvas: null,
+    ocrCtx: null,
+    sigCanvas: null,
+    sigCtx: null
+  }, SettingsMgr.load());
+
+  S.liveMode = false; // Canlı mod her açılışta kapalı başlasın (izin kullanıcı verir)
+
+  /* =========================================================
+   * 3) DOM
+   * ========================================================= */
+  const el = {
+    app: document.getElementById('app'),
+    video: document.getElementById('video'),
+    cameraContainer: document.getElementById('cameraContainer'),
+    placeholder: document.getElementById('placeholder'),
+    overlayLayer: document.getElementById('overlayLayer'),
+    ocrRegionBox: document.getElementById('ocrRegionBox'),
+    statusBadge: document.getElementById('statusBadge'),
+    statusText: document.getElementById('statusText'),
+    errorBanner: document.getElementById('errorBanner'),
+    errText: document.getElementById('errText'),
+    errClose: document.getElementById('errClose'),
+    startStopBtn: document.getElementById('startStopBtn'),
+    scanNowBtn: document.getElementById('scanNowBtn'),
+    toggleLiveBtn: document.getElementById('toggleLiveBtn'),
+    regionToggleBtn: document.getElementById('regionToggleBtn'),
+    resultsBtn: document.getElementById('resultsBtn'),
+    switchCamBtn: document.getElementById('switchCamBtn'),
+    settingsBtn: document.getElementById('settingsBtn'),
+    sourceLang: document.getElementById('sourceLang'),
+    targetLang: document.getElementById('targetLang'),
+    settingsSheet: document.getElementById('settingsSheet'),
+    resultsSheet: document.getElementById('resultsSheet'),
+    resultsList: document.getElementById('resultsList'),
+    swOverlay: document.getElementById('swOverlay'),
+    swOriginal: document.getElementById('swOriginal'),
+    swPreprocess: document.getElementById('swPreprocess'),
+    swDim: document.getElementById('swDim'),
+    swMirror: document.getElementById('swMirror'),
+    ocrModeSelect: document.getElementById('ocrModeSelect'),
+    intervalSelect: document.getElementById('intervalSelect'),
+    confRange: document.getElementById('confRange'),
+    confVal: document.getElementById('confVal'),
+    toast: document.getElementById('toast')
+  };
+
+  /* =========================================================
+   * 4) UI YARDIMCILARI
+   * ========================================================= */
+  function showToast(msg, ms=1600){
+    el.toast.textContent = msg;
+    el.toast.classList.add('show');
+    clearTimeout(showToast._t);
+    showToast._t = setTimeout(()=>el.toast.classList.remove('show'), ms);
+  }
+  function showError(msg, ms=4500){
+    el.errText.textContent = msg;
+    el.errorBanner.classList.add('show');
+    clearTimeout(showError._t);
+    showError._t = setTimeout(()=>el.errorBanner.classList.remove('show'), ms);
+  }
+  function setStatus(text){ el.statusText.textContent = text; el.statusBadge.classList.add('show'); }
+  function hideStatus(){ el.statusBadge.classList.remove('show'); }
+  function isSecureContextOk(){
+    return window.isSecureContext || location.protocol === 'https:' ||
+      location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+  }
+
+  /* =========================================================
+   * 5) KOORDİNAT MAPPER (merkezi dönüşüm sistemi)
+   * =========================================================
+   * Tüm koordinat dönüşümleri burada yapılır.
+   * - Video, object-fit: cover ile gösterilir
+   * - Ön kamera kullanılıyorsa display mirror uygulanır (state.isMirrored)
+   * - OCR canvas'ı video frame'in kırpılmış + ölçeklenmiş halidir
+   */
+  const CoordMapper = (function(){
+
+    function getParams(){
+      const vw = el.video.videoWidth  || 0;
+      const vh = el.video.videoHeight || 0;
+      const cw = el.cameraContainer.clientWidth  || 0;
+      const ch = el.cameraContainer.clientHeight || 0;
+      if(!vw || !vh || !cw || !ch) return null;
+      const scale = Math.max(cw/vw, ch/vh);
+      const drawW = vw*scale, drawH = vh*scale;
+      const offX  = (cw - drawW)/2;
+      const offY  = (ch - drawH)/2;
+      return { vw, vh, cw, ch, scale, drawW, drawH, offX, offY };
+    }
+
+    /* Ekran (container) nokta → video frame nokta */
+    function screenToVideo(sx, sy){
+      const p = getParams(); if(!p) return null;
+      if(S.isMirrored){
+        // mirror sonrası: sx_displayed = cw - (offX + vx*scale)
+        const vx = (p.cw - sx - p.offX) / p.scale;
+        const vy = (sy - p.offY) / p.scale;
+        return { x: vx, y: vy };
+      }
+      return { x:(sx - p.offX)/p.scale, y:(sy - p.offY)/p.scale };
+    }
+
+    /* Video frame nokta → ekran nokta */
+    function videoToScreen(vx, vy){
+      const p = getParams(); if(!p) return null;
+      let sx = p.offX + vx*p.scale;
+      let sy = p.offY + vy*p.scale;
+      if(S.isMirrored){ sx = p.cw - sx; }
+      return { x:sx, y:sy };
+    }
+
+    /* Ekran rect (px) → video frame rect */
+    function screenRectToVideo(rect){
+      const p = getParams(); if(!p) return null;
+      const tl = screenToVideo(rect.left, rect.top);
+      const br = screenToVideo(rect.left + rect.width, rect.top + rect.height);
+      if(!tl || !br) return null;
+      const x = Math.min(tl.x, br.x);
+      const y = Math.min(tl.y, br.y);
+      const w = Math.abs(br.x - tl.x);
+      const h = Math.abs(br.y - tl.y);
+      return { x, y, w, h };
+    }
+
+    /* Video frame rect → ekran rect */
+    function videoRectToScreen(rect){
+      const p = getParams(); if(!p) return null;
+      const a = videoToScreen(rect.x, rect.y);
+      const b = videoToScreen(rect.x + rect.w, rect.y + rect.h);
+      if(!a || !b) return null;
+      return {
+        x: Math.min(a.x, b.x),
+        y: Math.min(a.y, b.y),
+        w: Math.abs(b.x - a.x),
+        h: Math.abs(b.y - a.y)
+      };
+    }
+
+    /* OCR canvas (kırpılmış & ölçeklenmiş) koordinatını video frame'e çevir */
+    function ocrToVideo(ocrX, ocrY, crop){
+      // crop: { x, y, w, h, scale }
+      return {
+        x: crop.x + ocrX / crop.scale,
+        y: crop.y + ocrY / crop.scale
+      };
+    }
+    function ocrSizeToVideo(ocrW, ocrH, crop){
+      return { w: ocrW / crop.scale, h: ocrH / crop.scale };
+    }
+
+    return { getParams, screenToVideo, videoToScreen, screenRectToVideo, videoRectToScreen,
+             ocrToVideo, ocrSizeToVideo };
+  })();
+
+  /* =========================================================
+   * 6) KAMERA YÖNETİCİSİ
+   * ========================================================= */
+  const CameraMgr = (function(){
+
+    function updateMirrorClass(){
+      // Ön kamerada ve ayar açıksa CSS ile aynalama uygulanır.
+      const shouldMirror = S.facingMode === 'user' && S.mirrorFront;
+      S.isMirrored = shouldMirror;
+      el.video.classList.toggle('mirrored', shouldMirror);
+    }
+
+    async function start(){
+      if(S.cameraOn) return;
+
+      if(!isSecureContextOk()){
+        showError('Kamera erişimi için HTTPS bağlantısı kullanın.');
+        return;
+      }
+      if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+        showError('Tarayıcınız kamera erişimini desteklemiyor.');
+        return;
+      }
+
+      setStatus('Kamera açılıyor…');
+      stopStream(); // garanti
+
+      try{
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: {
+            facingMode: { ideal: S.facingMode },
+            width:  { ideal: 1280 },
+            height: { ideal: 720 }
+          }
+        });
+        S.stream = stream;
+        el.video.srcObject = stream;
+        try{ await el.video.play(); }catch(_){}
+
+        // Metadata hazır olana kadar bekle (videoWidth için)
+        await waitForVideoReady(2500);
+
+        S.cameraOn = true;
+        updateMirrorClass();
+        el.placeholder.style.display = 'none';
+        el.startStopBtn.textContent = 'Durdur';
+        el.startStopBtn.classList.remove('primary');
+        el.startStopBtn.classList.add('danger');
+        el.scanNowBtn.disabled = false;
+        el.switchCamBtn.disabled = false;
+
+        applyRegionVisibility();
+        applyRegionRect();
+        hideStatus();
+
+        if(S.liveMode){
+          el.toggleLiveBtn.textContent = 'Canlı: Açık';
+          el.toggleLiveBtn.classList.add('ok');
+          startAutoScan();
+        }
+      } catch(err){
+        console.error('Kamera hatası:', err);
+        let msg = 'Kamera başlatılamadı.';
+        const name = err && err.name;
+        if(name === 'NotAllowedError') msg = 'Kamera izni reddedildi. Tarayıcı ayarlarından izin verin.';
+        else if(name === 'NotFoundError') msg = 'Kamera bulunamadı.';
+        else if(name === 'NotReadableError') msg = 'Kamera başka bir uygulama tarafından kullanılıyor olabilir.';
+        else if(name === 'OverconstrainedError') msg = 'Bu çözünürlük desteklenmiyor.';
+        showError(msg);
+        hideStatus();
+      }
+    }
+
+    function waitForVideoReady(timeout){
+      return new Promise(resolve => {
+        if(el.video.videoWidth && el.video.videoHeight) return resolve(true);
+        const t0 = performance.now();
+        const tick = () => {
+          if(el.video.videoWidth && el.video.videoHeight) return resolve(true);
+          if(performance.now() - t0 > timeout) return resolve(false);
+          requestAnimationFrame(tick);
+        };
+        tick();
+      });
+    }
+
+    function stopStream(){
+      if(S.stream){
+        try{ S.stream.getTracks().forEach(t=>t.stop()); }catch(_){}
+        S.stream = null;
+      }
+      try{ el.video.srcObject = null; }catch(_){}
+    }
+
+    function stop(){
+      stopAutoScan();
+      stopStream();
+      S.cameraOn = false;
+      S.liveMode = false;
+      S.ocrStatus = 'idle';
+
+      el.placeholder.style.display = 'flex';
+      el.startStopBtn.textContent = 'Başlat';
+      el.startStopBtn.classList.add('primary');
+      el.startStopBtn.classList.remove('danger');
+      el.scanNowBtn.disabled = true;
+      el.switchCamBtn.disabled = true;
+      el.ocrRegionBox.classList.remove('active');
+      el.toggleLiveBtn.textContent = 'Canlı: Kapalı';
+      el.toggleLiveBtn.classList.remove('ok');
+      el.video.classList.remove('mirrored');
+      S.isMirrored = false;
+      OverlayMgr.clearAll();
+      hideStatus();
+    }
+
+    async function switch(){
+      if(!S.cameraOn) return;
+      const prev = S.facingMode;
+      S.facingMode = (prev === 'environment') ? 'user' : 'environment';
+      stopStream();
+      S.cameraOn = false;
+      await start();
+      showToast(S.facingMode === 'environment' ? 'Arka kamera' : 'Ön kamera');
+    }
+
+    return { start, stop, switch, stopStream, updateMirrorClass };
+  })();
+
+  /* =========================================================
+   * 7) FRAME PROCESSOR (yakalama + preprocessing)
+   * ========================================================= */
+  const FrameProcessor = (function(){
+
+    function getOCRRegionVideoRect(){
+      // OCR kutusu (ekranda) → video frame koordinatları
+      const rect = el.ocrRegionBox.getBoundingClientRect();
+      const cRect = el.cameraContainer.getBoundingClientRect();
+      return CoordMapper.screenRectToVideo({
+        left: rect.left - cRect.left,
+        top:  rect.top  - cRect.top,
+        width: rect.width,
+        height: rect.height
+      });
+    }
+
+    /* Yakalama: video → ocrCanvas (kırp, ölçekle, ön işleme) */
+    function capture(){
+      const vw = el.video.videoWidth;
+      const vh = el.video.videoHeight;
+      if(!vw || !vh) return null;
+
+      let sx=0, sy=0, sw=vw, sh=vh;
+
+      if(S.ocrMode === 'region'){
+        const r = getOCRRegionVideoRect();
+        if(r && r.w > 20 && r.h > 20){
+          sx = clamp(Math.floor(r.x), 0, vw-1);
+          sy = clamp(Math.floor(r.y), 0, vh-1);
+          sw = clamp(Math.ceil(r.w), 20, vw - sx);
+          sh = clamp(Math.ceil(r.h), 20, vh - sy);
+        }
+      }
+
+      // Ölçekleme: küçük kırpmalarda büyüt, çok büyüklerde sınırla
+      const scale = clamp(CONFIG.ocrScaleTarget / sw, 1, 2.2);
+      const outW = Math.round(sw * scale);
+      const outH = Math.round(sh * scale);
+
+      if(!S.ocrCanvas){
+        S.ocrCanvas = document.createElement('canvas');
+        S.ocrCtx = S.ocrCanvas.getContext('2d', { willReadFrequently:true });
+      }
+      S.ocrCanvas.width = outW;
+      S.ocrCanvas.height = outH;
+
+      const ctx = S.ocrCtx;
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(el.video, sx, sy, sw, sh, 0, 0, outW, outH);
+
+      if(S.preprocess){
+        try{ adaptivePreprocess(ctx, outW, outH); }catch(_){}
+      }
+
+      return {
+        canvas: S.ocrCanvas,
+        crop: { x: sx, y: sy, w: sw, h: sh, scale },
+        frameW: vw, frameH: vh
+      };
+    }
+
+    /* Adaptif ön işleme: parlaklık/kontrast analizine göre gri tonlama +
+       kontrast germe + hafif keskinleştirme uygular. */
+    function adaptivePreprocess(ctx, w, h){
+      const imgData = ctx.getImageData(0, 0, w, h);
+      const d = imgData.data;
+
+      // Ortalama parlaklık ve varyans
+      let sum=0, sumSq=0;
+      const n = d.length/4;
+      for(let i=0;i<d.length;i+=4){
+        const g = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+        sum += g; sumSq += g*g;
+      }
+      const mean = sum/n;
+      const variance = Math.max(0, sumSq/n - mean*mean);
+      const std = Math.sqrt(variance);
+
+      // Kontrast faktörü: düşük std → güçlü germe
+      let k = 1.0;
+      if(std < 45) k = 1.55;
+      else if(std < 75) k = 1.30;
+      else k = 1.15;
+
+      // Çok karanlık veya çok aydınlık görüntülerde parlaklık offset
+      const brightOffset = (mean < 70) ? 12 : (mean > 200 ? -10 : 0);
+
+      for(let i=0;i<d.length;i+=4){
+        let g = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+        g = (g - 128) * k + 128 + brightOffset;
+        g = g < 0 ? 0 : (g > 255 ? 255 : g);
+        d[i] = d[i+1] = d[i+2] = g;
+      }
+      ctx.putImageData(imgData, 0, 0);
+
+      // Hafif keskinleştirme (unsharp mask benzeri, 3x3 convolve)
+      if(std < 90 && w > 60 && h > 30){
+        try{ sharpenLight(ctx, w, h); }catch(_){}
+      }
+    }
+
+    function sharpenLight(ctx, w, h){
+      const src = ctx.getImageData(0, 0, w, h);
+      const s = src.data;
+      const out = new Uint8ClampedArray(s.length);
+      // Kernel: 0 -1 0 / -1 5 -1 / 0 -1 0
+      for(let y=0;y<h;y++){
+        for(let x=0;x<w;x++){
+          const idx = (y*w + x) * 4;
+          let v;
+          if(x===0||y===0||x===w-1||y===h-1){
+            v = s[idx];
+          } else {
+            const up = ((y-1)*w + x)*4;
+            const dn = ((y+1)*w + x)*4;
+            const lf = (y*w + (x-1))*4;
+            const rt = (y*w + (x+1))*4;
+            v = 5*s[idx] - s[up] - s[dn] - s[lf] - s[rt];
+            if(v<0) v=0; else if(v>255) v=255;
+          }
+          out[idx] = out[idx+1] = out[idx+2] = v;
+          out[idx+3] = s[idx+3];
+        }
+      }
+      const outImg = ctx.createImageData(w, h);
+      outImg.data.set(out);
+      ctx.putImageData(outImg, 0, 0);
+    }
+
+    /* Frame imzası: OCR bölgesinden alınır (varsa), yoksa tüm kareden */
+    function computeSignature(){
+      if(!S.sigCanvas){
+        S.sigCanvas = document.createElement('canvas');
+        S.sigCanvas.width = 32; S.sigCanvas.height = 32;
+        S.sigCtx = S.sigCanvas.getContext('2d', { willReadFrequently:true });
+      }
+      try{
+        let sx=0, sy=0, sw=el.video.videoWidth, sh=el.video.videoHeight;
+        if(S.ocrMode === 'region'){
+          const r = getOCRRegionVideoRect();
+          if(r && r.w > 20 && r.h > 20){
+            sx = clamp(Math.floor(r.x), 0, sw-1);
+            sy = clamp(Math.floor(r.y), 0, sh-1);
+            sw = clamp(Math.ceil(r.w), 20, el.video.videoWidth - sx);
+            sh = clamp(Math.ceil(r.h), 20, el.video.videoHeight - sy);
+          }
+        }
+        S.sigCtx.drawImage(el.video, sx, sy, sw, sh, 0, 0, 32, 32);
+        const d = S.sigCtx.getImageData(0, 0, 32, 32).data;
+        const out = new Uint8Array(32*32);
+        for(let i=0;i<out.length;i++){
+          out[i] = (d[i*4]*0.299 + d[i*4+1]*0.587 + d[i*4+2]*0.114) | 0;
+        }
+        return out;
+      }catch(_){ return null; }
+    }
+
+    function frameDiff(a, b){
+      if(!a || !b) return 255;
+      let s = 0;
+      for(let i=0;i<a.length;i++) s += Math.abs(a[i]-b[i]);
+      return s / a.length;
+    }
+
+    return { capture, computeSignature, frameDiff, getOCRRegionVideoRect };
+  })();
+
+  /* =========================================================
+   * 8) OCR YÖNETİCİSİ (Tesseract worker lifecycle)
+   * ========================================================= */
+  const OCRManager = (function(){
+
+    async function ensureWorker(lang){
+      if(S.worker && S.workerLang === lang) return S.worker;
+      if(S.workerPromise && S.workerLang === lang) return S.workerPromise;
+
+      // Eski worker'ı güvenli biçimde sonlandır
+      if(S.worker){
+        try{ await S.worker.terminate(); }catch(_){}
+        S.worker = null;
+      }
+
+      S.workerLang = lang;
+      S.ocrStatus = 'loading';
+      setStatus(`OCR modeli yükleniyor (${LANG_NAMES[lang] || lang})…`);
+
+      S.workerPromise = (async () => {
+        try{
+          const w = await Tesseract.createWorker(lang, 1, {
+            errorHandler: e => console.warn('Tesseract hata:', e)
+          });
+          try{
+            await w.setParameters({
+              tessedit_pageseg_mode: '3',
+              preserve_interword_spaces: '1'
+            });
+          }catch(_){}
+          S.worker = w;
+          return w;
+        } catch(err){
+          S.worker = null;
+          S.workerLang = null;
+          S.ocrStatus = 'error';
+          showError('OCR motoru yüklenemedi. İnternet bağlantınızı kontrol edin.');
+          throw err;
+        } finally {
+          S.workerPromise = null;
+        }
+      })();
+
+      return S.workerPromise;
+    }
+
+    async function terminate(){
+      if(S.workerPromise){
+        try{ await S.workerPromise; }catch(_){}
+      }
+      if(S.worker){
+        try{ await S.worker.terminate(); }catch(_){}
+      }
+      S.worker = null;
+      S.workerLang = null;
+      S.workerPromise = null;
+    }
+
+    /* OCR sonucundan satır/blok listesi çıkar */
+    function extractLines(data){
+      if(!data) return [];
+      if(Array.isArray(data.lines) && data.lines.length) return data.lines;
+      const out = [];
+      if(Array.isArray(data.blocks)){
+        for(const b of data.blocks){
+          if(Array.isArray(b.paragraphs)){
+            for(const p of b.paragraphs){
+              if(Array.isArray(p.lines)) out.push(...p.lines);
+            }
+          }
+        }
+      }
+      if(out.length) return out;
+      // Fallback: tek blok
+      if(data.text && data.text.trim().length){
+        return [{ text: data.text, bbox: null, confidence: 60 }];
+      }
+      return [];
+    }
+
+    /* Ana OCR fonksiyonu: capture + recognize + cleanup */
+    async function recognize(captured){
+      const worker = await ensureWorker(S.sourceLang);
+      S.ocrStatus = 'recognizing';
+      const res = await worker.recognize(captured.canvas);
+      return res && res.data;
+    }
+
+    return { ensureWorker, terminate, recognize, extractLines };
+  })();
+
+  /* =========================================================
+   * 9) ÇEVİRİ YÖNETİCİSİ (MyMemory + cache)
+   * ========================================================= */
+  const TranslationMgr = (function(){
+
+    function cacheKey(src, tgt, text){ return `${src}|${tgt}|${text}`; }
+
+    function cacheSet(map, key, val){
+      if(map.size >= CONFIG.translationCacheMax){
+        const firstKey = map.keys().next().value;
+        map.delete(firstKey);
+      }
+      map.set(key, val);
+    }
+
+    async function fetchMyMemory(text, src, tgt){
+      const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${src}|${tgt}`;
+      const ctrl = new AbortController();
+      const to = setTimeout(()=>ctrl.abort(), 9000);
+      try{
+        const resp = await fetch(url, { signal: ctrl.signal });
+        if(!resp.ok) throw new Error('HTTP '+resp.status);
+        const json = await resp.json();
+        if(json && json.responseStatus === 429) throw new Error('RATE_LIMIT');
+        const t = json && json.responseData && json.responseData.translatedText;
+        if(!t) throw new Error('EMPTY_RESPONSE');
+        if(/PLEASE SELECT|INVALID|QUERY LENGTH LIMIT/i.test(t)) throw new Error('API_MESSAGE');
+        return t;
+      } finally { clearTimeout(to); }
+    }
+
+    function splitText(text, maxLen){
+      if(text.length <= maxLen) return [text];
+      const sentences = text.split(/(?<=[.!?。！？])\s+/);
+      const out = [];
+      let cur = '';
+      for(const s of sentences){
+        if((cur + ' ' + s).trim().length > maxLen){
+          if(cur) out.push(cur.trim());
+          if(s.length > maxLen){
+            for(let i=0;i<s.length;i+=maxLen) out.push(s.substr(i, maxLen));
+            cur = '';
+          } else cur = s;
+        } else cur = (cur ? cur + ' ' : '') + s;
+      }
+      if(cur.trim()) out.push(cur.trim());
+      return out;
+    }
+
+    /* Ana çeviri: cache kullanır; aynı dil ise direkt döner */
+    async function translate(text, srcIso, tgtIso){
+      const trimmed = text.trim();
+      if(!trimmed) return '';
+      if(srcIso === tgtIso) return trimmed;
+
+      const normKey = cacheKey(srcIso, tgtIso, normalizeText(trimmed));
+      if(S.translationCache.has(normKey)) return S.translationCache.get(normKey);
+
+      const parts = splitText(trimmed, CONFIG.translateMaxLen);
+      const out = [];
+      for(const p of parts){
+        const pk = cacheKey(srcIso, tgtIso, normalizeText(p));
+        if(S.translationCache.has(pk)){ out.push(S.translationCache.get(pk)); continue; }
+        const t = await fetchMyMemory(p, srcIso, tgtIso);
+        cacheSet(S.translationCache, pk, t);
+        out.push(t);
+      }
+      const joined = out.join(' ');
+      cacheSet(S.translationCache, normKey, joined);
+      return joined;
+    }
+
+    function clearCache(){ S.translationCache.clear(); }
+
+    return { translate, clearCache };
+  })();
+
+  /* =========================================================
+   * 10) OVERLAY YÖNETİCİSİ (Google Lens tarzı)
+   * =========================================================
+   * - Her OCR bloğu için bir transBox oluşturulur/güncellenir
+   * - Box orijinal yazının bulunduğu bölgeye yerleşir ve orijinali kapatır
+   * - ID: normalize(text) + yakın konum hash
+   * - Küçük konum değişimleri CSS transition ile yumuşatılır
+   */
+  const OverlayManager = (function(){
+
+    const OVERLAY_TTL_MS = 900;     // eşleşmeyen kutular bu süre sonra silinir
+    const MATCH_POS_TOL = 80;       // px: aynı metin bu kadar yakınsa aynı kutu
+
+    function makeId(text, rect){
+      const n = normalizeText(text);
+      const gx = Math.round(rect.x / MATCH_POS_TOL);
+      const gy = Math.round(rect.y / MATCH_POS_TOL);
+      return strHash(n + '|' + gx + '|' + gy);
+    }
+
+    /* Yeni blokları işle: eşleşen kutuyu güncelle, eşleşmeyeni oluştur */
+    function apply(blocks, vw, vh){
+      const now = performance.now();
+      const usedIds = new Set();
+
+      for(const b of blocks){
+        const screen = CoordMapper.videoRectToScreen({
+          x: b.x, y: b.y, w: b.w, h: b.h
+        });
+        if(!screen) continue;
+        if(screen.w < 6 || screen.h < 6) continue;
+
+        const id = makeId(b.text, { x: b.x, y: b.y });
+        usedIds.add(id);
+
+        let item = S.overlayItems.get(id);
+
+        if(!item){
+          const created = createItem(b, screen);
+          if(!created) continue;
+          item = created;
+          S.overlayItems.set(id, item);
+        }
+
+        updateItem(item, b, screen, now);
+      }
+
+      // Kullanılmayan kutuları TTL sonrası kaldır
+      for(const [id, item] of Array.from(S.overlayItems.entries())){
+        if(!usedIds.has(id)){
+          if(now - item.lastSeen > OVERLAY_TTL_MS){
+            removeItem(id);
+          } else {
+            // soluklaştır
+            item.el.style.opacity = '0';
+            if(item.origEl) item.origEl.style.opacity = '0';
+          }
+        }
+      }
+    }
+
+    function createItem(block, screen){
+      if(!S.showOverlay) return null;
+
+      const box = document.createElement('div');
+      box.className = 'transBox fresh';
+
+      const trSpan = document.createElement('span');
+      trSpan.className = 'trText';
+      box.appendChild(trSpan);
+
+      el.overlayLayer.appendChild(box);
+
+      let origEl = null;
+      if(S.showOriginal){
+        origEl = document.createElement('div');
+        origEl.className = 'origTag';
+        origEl.textContent = block.text;
+        el.overlayLayer.appendChild(origEl);
+      }
+
+      return {
+        el: box,
+        origEl,
+        trSpan,
+        lastSeen: performance.now(),
+        text: block.text,
+        translated: block.translated || block.text,
+        target: screen
+      };
+    }
+
+    function updateItem(item, block, screen, now){
+      item.lastSeen = now;
+      item.text = block.text;
+      item.translated = block.translated || item.translated;
+
+      // Konum (CSS geçişi ile yumuşatma)
+      const cw = el.cameraContainer.clientWidth;
+      const ch = el.cameraContainer.clientHeight;
+      const margin = 4;
+
+      // Başlangıç hedef boyut: orijinal yazının ekran boyutu
+      let left = screen.x;
+      let top  = screen.y;
+      let w    = Math.max(screen.w, 36);
+      let h    = Math.max(screen.h, 20);
+
+      // Kutu içeriği (çeviri) - uzun metinde büyümesine izin ver
+      item.trSpan.textContent = item.translated;
+      item.el.classList.add('show');
+      item.el.style.opacity = '1';
+
+      // Önce minimum boyuta oturt, sonra gerekirse büyüt
+      item.el.style.fontSize = '14px';
+      item.el.style.left = left + 'px';
+      item.el.style.top  = top  + 'px';
+      item.el.style.width  = w + 'px';
+      item.el.style.height = h + 'px';
+
+      // Ölçüm (zorunlu reflow — sadece box style değişimi sonrası)
+      const neededW = item.trSpan.scrollWidth + 16;
+      const neededH = item.trSpan.scrollHeight + 8;
+
+      // Sığdırma: önce font küçült, sonra kutuyu büyüt
+      let fontSize = 14;
+      let tries = 0;
+      while((neededW > w - 4 || neededH > h - 4) && fontSize > 10 && tries < 6){
+        fontSize -= 1;
+        item.el.style.fontSize = fontSize + 'px';
+        // Tekrar ölç
+        const nW = item.trSpan.scrollWidth + 16;
+        const nH = item.trSpan.scrollHeight + 8;
+        if(nW <= w - 4 && nH <= h - 4) break;
+        tries++;
+      }
+
+      // Halen sığmıyorsa kutuyu büyüt (ekran sınırları içinde)
+      const finalW = item.trSpan.scrollWidth + 16;
+      const finalH = item.trSpan.scrollHeight + 8;
+      if(finalW > w || finalH > h){
+        w = Math.min(cw - 8, Math.max(w, finalW));
+        h = Math.min(ch - 60, Math.max(h, finalH));
+      }
+
+      // Ekran sınırlarına sığdır
+      if(left + w > cw - margin) left = cw - margin - w;
+      if(top + h > ch - margin)  top  = ch - margin - h;
+      if(left < margin) left = margin;
+      if(top < 50) top = 50;
+
+      item.el.style.left   = left + 'px';
+      item.el.style.top    = top  + 'px';
+      item.el.style.width  = w + 'px';
+      item.el.style.height = h + 'px';
+
+      if(item.origEl){
+        const oTop = (top - 20 >= 50) ? (top - 20) : (top + h + 2);
+        item.origEl.style.left = left + 'px';
+        item.origEl.style.top  = oTop + 'px';
+        item.origEl.style.maxWidth = Math.min(cw - 16, w + 40) + 'px';
+        item.origEl.textContent = block.text;
+        item.origEl.classList.add('show');
+        item.origEl.style.opacity = '1';
+      }
+
+      // fresh animasyonu bir kez
+      setTimeout(()=>item.el.classList.remove('fresh'), 260);
+    }
+
+    function removeItem(id){
+      const item = S.overlayItems.get(id);
+      if(!item) return;
+      try{ item.el.remove(); }catch(_){}
+      if(item.origEl) try{ item.origEl.remove(); }catch(_){}
+      S.overlayItems.delete(id);
+    }
+
+    /* Overlay temizleme — translation cache veya ayarlara dokunmaz */
+    function clearAll(){
+      for(const id of Array.from(S.overlayItems.keys())){
+        removeItem(id);
+      }
+      S.overlayItems.clear();
+    }
+
+    /* Overlay aç/kapat veya mirror/ayar değişiminde tümünü yeniden kur */
+    function refreshVisibility(){
+      if(!S.showOverlay){
+        clearAll();
+      } else {
+        // showOriginal gibi ayarlar değişince görsel tutarlılık için sıfırla
+        clearAll();
+      }
+    }
+
+    return { apply, clearAll, refreshVisibility };
+  })();
+
+  /* =========================================================
+   * 11) OCR + ÇEVİRİ AKIŞI
+   * ========================================================= */
+  async function runOCRAndTranslate(force){
+    if(!S.cameraOn) return;
+    if(S.ocrStatus === 'recognizing' || S.ocrStatus === 'loading' || S.ocrStatus === 'translating'){
+      return; // Aynı anda tek işlem
+    }
+
+    const now = performance.now();
+    if(!force && now - S.lastScanAt < CONFIG.minScanInterval) return;
+
+    // Frame değişimi kontrolü (force bypass eder)
+    if(!force){
+      const sig = FrameProcessor.computeSignature();
+      const diff = FrameProcessor.frameDiff(sig, S.lastFrameSig);
+      S.lastFrameSig = sig;
+      const forcedDue = (now - S.lastForcedScanAt) > CONFIG.forcedRescanMs;
+      if(diff < CONFIG.frameDiffThreshold && !forcedDue){
+        return;
+      }
+      if(forcedDue) S.lastForcedScanAt = now;
+    } else {
+      S.lastForcedScanAt = now;
+    }
+
+    S.lastScanAt = now;
+
+    try{
+      S.ocrStatus = 'recognizing';
+      setStatus('Metin taranıyor…');
+
+      const captured = FrameProcessor.capture();
+      if(!captured){ S.ocrStatus = 'idle'; hideStatus(); return; }
+
+      const data = await OCRManager.recognize(captured);
+      const lines = OCRManager.extractLines(data);
+
+      // OCR bbox → video frame koordinatlarına çevir
+      const crop = captured.crop;
+      const blocksRaw = [];
+
+      for(const ln of lines){
+        const rawText = cleanOCRText(ln.text || '');
+        if(!rawText) continue;
+        if(looksLikeGarbage(rawText)) continue;
+        const conf = typeof ln.confidence === 'number' ? ln.confidence : 0;
+        if(conf && conf < S.minConfidence) continue;
+
+        let vx, vy, vw2, vh2;
+        if(ln.bbox){
+          const b = ln.bbox;
+          const p1 = CoordMapper.ocrToVideo(b.x0 || 0, b.y0 || 0, crop);
+          const sz = CoordMapper.ocrSizeToVideo((b.x1||0)-(b.x0||0), (b.y1||0)-(b.y0||0), crop);
+          vx = p1.x; vy = p1.y; vw2 = sz.w; vh2 = sz.h;
+        } else {
+          vx = crop.x; vy = crop.y; vw2 = crop.w; vh2 = crop.h;
+        }
+        if(vw2 < 4 || vh2 < 4) continue;
+        blocksRaw.push({ text: rawText, norm: normalizeText(rawText), confidence: conf,
+                         x: vx, y: vy, w: vw2, h: vh2 });
+      }
+
+      if(blocksRaw.length === 0){
+        // Sonuç yok
+        S.ocrStatus = 'done';
+        setStatus('Metin bulunamadı');
+        setTimeout(hideStatus, 800);
+        return;
+      }
+
+      // Aynı frame içinde deduplicate (aynı normalize metni tek kere çevir)
+      const uniqueTexts = new Map(); // norm → { text, translated? }
+      for(const b of blocksRaw){
+        if(!uniqueTexts.has(b.norm)) uniqueTexts.set(b.norm, { text: b.text, translated: null });
+      }
+
+      // Çeviri (stabilizasyon: aynı metin kısa süre içinde tekrar çevrilmez)
+      S.ocrStatus = 'translating';
+      setStatus('Çevriliyor…');
+      const srcIso = S.sourceIso;
+      const tgtIso = S.targetIso;
+
+      for(const [norm, info] of uniqueTexts){
+        // 1) Kalıcı cache
+        const key = `${srcIso}|${tgtIso}|${norm}`;
+        if(S.translationCache.has(key)){
+          info.translated = S.translationCache.get(key);
+          continue;
+        }
+        // 2) Stability map (60 sn)
+        const stab = S.textStabilityMap.get(key);
+        if(stab && (Date.now() - stab.ts < 60000)){
+          info.translated = stab.translated;
+          S.translationCache.set(key, stab.translated);
+          continue;
+        }
+        // 3) API
+        try{
+          const t = await TranslationMgr.translate(info.text, srcIso, tgtIso);
+          info.translated = t;
+          S.textStabilityMap.set(key, { translated: t, ts: Date.now() });
+        } catch(err){
+          if(String(err && err.message).includes('RATE_LIMIT')){
+            showError('Çeviri servisi limitine ulaşıldı. Biraz bekleyin.');
+          } else if(err && err.name === 'AbortError'){
+            showError('Çeviri zaman aşımı.');
+          }
+          info.translated = info.text; // Hata → orijinali göster
+        }
+      }
+
+      // Blokları çevirileriyle eşleştir
+      const finalBlocks = blocksRaw.map(b => ({
+        ...b,
+        translated: uniqueTexts.get(b.norm).translated || b.text
+      }));
+
+      // Sonuç listesi (dedupe edilmiş)
+      S.currentResults = Array.from(uniqueTexts.entries()).map(([norm, info]) => ({
+        text: info.text,
+        translated: info.translated || info.text
+      }));
+
+      updateResultsPanel();
+
+      // Overlay güncelle
+      if(S.showOverlay){
+        OverlayManager.apply(finalBlocks, captured.frameW, captured.frameH);
+      } else {
+        OverlayManager.clearAll();
+      }
+
+      S.ocrStatus = 'done';
+      setStatus('Tamamlandı');
+      setTimeout(hideStatus, 650);
+    } catch(err){
+      console.error('OCR akış hatası:', err);
+      S.ocrStatus = 'error';
+      setStatus('OCR hatası');
+      setTimeout(hideStatus, 900);
+    } finally{
+      if(S.ocrStatus !== 'error') S.ocrStatus = 'idle';
+    }
+  }
+
+  /* =========================================================
+   * 12) OTOMATİK TARAMA
+   * ========================================================= */
+  function startAutoScan(){
+    stopAutoScan();
+    const iv = Math.max(900, S.intervalSec * 1000);
+    S.scanTimer = setInterval(()=>{
+      if(!S.cameraOn || !S.liveMode) return;
+      if(S.ocrStatus === 'recognizing' || S.ocrStatus === 'loading' || S.ocrStatus === 'translating') return;
+      runOCRAndTranslate(false);
+    }, iv);
+  }
+  function stopAutoScan(){
+    if(S.scanTimer){ clearInterval(S.scanTimer); S.scanTimer = null; }
+  }
+
+  /* =========================================================
+   * 13) OCR BÖLGESİ (sürükle/boyutlandır)
+   * ========================================================= */
+  function applyRegionRect(){
+    const r = S.region;
+    el.ocrRegionBox.style.width  = (r.wPct*100) + '%';
+    el.ocrRegionBox.style.height = (r.hPct*100) + '%';
+    el.ocrRegionBox.style.left   = (r.xPct*100) + '%';
+    el.ocrRegionBox.style.top    = (r.yPct*100) + '%';
+  }
+
+  function applyRegionVisibility(){
+    const active = S.cameraOn && S.ocrMode === 'region';
+    el.ocrRegionBox.classList.toggle('active', active);
+    el.ocrRegionBox.classList.toggle('noDim', !S.dimOutside);
+  }
+
+  function attachRegionDrag(){
+    const box = el.ocrRegionBox;
+    let dragData = null;
+
+    const onPointerDown = (e) => {
+      const corner = e.target.getAttribute && e.target.getAttribute('data-corner');
+      const rect = box.getBoundingClientRect();
+      dragData = {
+        pointerId: e.pointerId,
+        corner: corner || 'move',
+        startX: e.clientX,
+        startY: e.clientY,
+        startRect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height }
+      };
+      try{ box.setPointerCapture(e.pointerId); }catch(_){}
+      e.preventDefault();
+    };
+    const onPointerMove = (e) => {
+      if(!dragData || dragData.pointerId !== e.pointerId) return;
+      const dx = e.clientX - dragData.startX;
+      const dy = e.clientY - dragData.startY;
+      const cRect = el.cameraContainer.getBoundingClientRect();
+      let left = dragData.startRect.left - cRect.left;
+      let top  = dragData.startRect.top  - cRect.top;
+      let width = dragData.startRect.width;
+      let height = dragData.startRect.height;
+
+      const minW = 60, minH = 44;
+
+      if(dragData.corner === 'move'){ left += dx; top += dy; }
+      else {
+        if(dragData.corner.includes('l')){ left += dx; width -= dx; }
+        if(dragData.corner.includes('r')){ width += dx; }
+        if(dragData.corner.includes('t')){ top += dy;  height -= dy; }
+        if(dragData.corner.includes('b')){ height += dy; }
+      }
+
+      const cw = el.cameraContainer.clientWidth;
+      const ch = el.cameraContainer.clientHeight;
+      if(width < minW){
+        if(dragData.corner.includes('l')) left = dragData.startRect.left - cRect.left + (dragData.startRect.width - minW);
+        width = minW;
+      }
+      if(height < minH){
+        if(dragData.corner.includes('t')) top = dragData.startRect.top - cRect.top + (dragData.startRect.height - minH);
+        height = minH;
+      }
+      if(left < 0){ if(dragData.corner.includes('l')) width += left; left = 0; }
+      if(top  < 0){ if(dragData.corner.includes('t')) height += top; top = 0; }
+      if(left + width > cw){ if(dragData.corner.includes('r')) width = cw - left; else left = cw - width; }
+      if(top + height > ch){ if(dragData.corner.includes('b')) height = ch - top; else top = ch - height; }
+
+      S.region = {
+        xPct: left / cw, yPct: top / ch,
+        wPct: width / cw, hPct: height / ch
+      };
+      applyRegionRect();
+      e.preventDefault();
+    };
+    const onPointerUp = (e) => {
+      if(dragData && dragData.pointerId === e.pointerId){
+        try{ box.releasePointerCapture(e.pointerId); }catch(_){}
+        dragData = null;
+        SettingsMgr.save(S);
+      }
+    };
+
+    box.addEventListener('pointerdown', onPointerDown);
+    box.addEventListener('pointermove', onPointerMove);
+    box.addEventListener('pointerup', onPointerUp);
+    box.addEventListener('pointercancel', onPointerUp);
+  }
+
+  /* =========================================================
+   * 14) SONUÇ PANELİ
+   * ========================================================= */
+  function updateResultsPanel(){
+    const list = el.resultsList;
+    list.innerHTML = '';
+    if(!S.currentResults || S.currentResults.length === 0){
+      const empty = document.createElement('div');
+      empty.style.color = 'var(--muted)';
+      empty.style.fontSize = '13px';
+      empty.textContent = 'Henüz sonuç yok.';
+      list.appendChild(empty);
+      return;
+    }
+    for(const r of S.currentResults){
+      const item = document.createElement('div');
+      item.className = 'resultItem';
+
+      const origEl = document.createElement('div');
+      origEl.className = 'orig';
+      origEl.textContent = r.text;
+
+      const trEl = document.createElement('div');
+      trEl.className = 'tr';
+      trEl.textContent = r.translated;
+
+      const copyBtn = document.createElement('button');
+      copyBtn.className = 'btn';
+      copyBtn.style.marginTop = '8px';
+      copyBtn.style.padding = '6px 10px';
+      copyBtn.style.fontSize = '11px';
+      copyBtn.textContent = 'Sonucu kopyala';
+      copyBtn.onclick = async ()=>{
+        try{
+          await navigator.clipboard.writeText(r.translated);
+          showToast('Kopyalandı');
+        }catch(_){
+          const ta = document.createElement('textarea');
+          ta.value = r.translated;
+          document.body.appendChild(ta);
+          ta.select();
+          try{ document.execCommand('copy'); showToast('Kopyalandı'); }
+          catch(_2){ showToast('Kopyalanamadı'); }
+          ta.remove();
+        }
+      };
+
+      item.appendChild(origEl);
+      item.appendChild(trEl);
+      item.appendChild(copyBtn);
+      list.appendChild(item);
+    }
+  }
+
+  /* =========================================================
+   * 15) UI BAĞLAMA
+   * ========================================================= */
+  function applySettingsToUI(){
+    // Diller
+    el.sourceLang.value = S.sourceLang;
+    el.targetLang.value = S.targetIso;
+    // Switch'ler
+    el.swOverlay.classList.toggle('on', S.showOverlay);
+    el.swOriginal.classList.toggle('on', S.showOriginal);
+    el.swPreprocess.classList.toggle('on', S.preprocess);
+    el.swDim.classList.toggle('on', S.dimOutside);
+    el.swMirror.classList.toggle('on', S.mirrorFront);
+    // Select'ler
+    el.ocrModeSelect.value = S.ocrMode;
+    el.intervalSelect.value = String(S.intervalSec);
+    el.confRange.value = S.minConfidence;
+    el.confVal.textContent = S.minConfidence;
+    // Alan
+    el.regionToggleBtn.textContent = S.ocrMode === 'region' ? 'Alan: Orta' : 'Alan: Tam Ekran';
+    // Live butonu
+    el.toggleLiveBtn.textContent = 'Canlı: Kapalı';
+    el.toggleLiveBtn.classList.remove('ok');
+    // OCR bölge görünürlüğü
+    applyRegionVisibility();
+  }
+
+  function bindUI(){
+    el.startStopBtn.addEventListener('click', async ()=>{
+      if(S.cameraOn){
+        CameraMgr.stop();
+      } else {
+        await CameraMgr.start();
+      }
+    });
+
+    el.switchCamBtn.addEventListener('click', async ()=>{
+      await CameraMgr.switch();
+    });
+
+    el.scanNowBtn.addEventListener('click', ()=>{
+      if(!S.cameraOn){ showToast('Önce kamerayı başlatın'); return; }
+      runOCRAndTranslate(true);
+    });
+
+    el.toggleLiveBtn.addEventListener('click', ()=>{
+      S.liveMode = !S.liveMode;
+      el.toggleLiveBtn.textContent = 'Canlı: ' + (S.liveMode ? 'Açık' : 'Kapalı');
+      el.toggleLiveBtn.classList.toggle('ok', S.liveMode);
+      SettingsMgr.save(S);
+      if(S.liveMode){
+        if(S.cameraOn) startAutoScan();
+        showToast('Canlı çeviri açık');
+      } else {
+        stopAutoScan();
+        showToast('Canlı çeviri kapalı');
+      }
+    });
+
+    el.regionToggleBtn.addEventListener('click', ()=>{
+      if(S.ocrMode === 'region'){
+        S.ocrMode = 'full';
+        el.regionToggleBtn.textContent = 'Alan: Tam Ekran';
+      } else {
+        S.ocrMode = 'region';
+        el.regionToggleBtn.textContent = 'Alan: Orta';
+      }
+      applyRegionVisibility();
+      el.ocrModeSelect.value = S.ocrMode;
+      SettingsMgr.save(S);
+    });
+
+    el.settingsBtn.addEventListener('click', ()=>{
+      el.resultsSheet.classList.remove('open');
+      el.settingsSheet.classList.toggle('open');
+    });
+    el.resultsBtn.addEventListener('click', ()=>{
+      el.settingsSheet.classList.remove('open');
+      el.resultsSheet.classList.toggle('open');
+      updateResultsPanel();
+    });
+
+    document.querySelectorAll('[data-close]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const id = btn.getAttribute('data-close');
+        document.getElementById(id).classList.remove('open');
+      });
+    });
+
+    el.errClose.addEventListener('click', ()=>el.errorBanner.classList.remove('show'));
+
+    // Diller
+    el.sourceLang.addEventListener('change', async ()=>{
+      const opt = el.sourceLang.options[el.sourceLang.selectedIndex];
+      S.sourceLang = el.sourceLang.value;
+      S.sourceIso = opt.getAttribute('data-iso') || 'en';
+      // Worker dilini sıfırla
+      await OCRManager.terminate();
+      TranslationMgr.clearCache();
+      S.textStabilityMap.clear();
+      OverlayManager.clearAll();
+      SettingsMgr.save(S);
+      showToast('Kaynak dil: ' + opt.textContent);
+    });
+    el.targetLang.addEventListener('change', ()=>{
+      S.targetIso = el.targetLang.value;
+      TranslationMgr.clearCache();
+      S.textStabilityMap.clear();
+      OverlayManager.clearAll();
+      SettingsMgr.save(S);
+      showToast('Hedef dil: ' + el.targetLang.options[el.targetLang.selectedIndex].textContent);
+    });
+
+    // Ayarlar switch'leri
+    const bindSwitch = (swEl, key, cb)=>{
+      swEl.addEventListener('click', ()=>{
+        S[key] = !S[key];
+        swEl.classList.toggle('on', S[key]);
+        SettingsMgr.save(S);
+        if(cb) cb(S[key]);
+      });
+    };
+    bindSwitch(el.swOverlay, 'showOverlay', v=>{
+      if(!v) OverlayManager.clearAll();
+    });
+    bindSwitch(el.swOriginal, 'showOriginal', ()=>{
+      OverlayManager.clearAll(); // Bir sonraki taramada yeniden çizilir
+    });
+    bindSwitch(el.swPreprocess, 'preprocess');
+    bindSwitch(el.swDim, 'dimOutside', ()=>{
+      el.ocrRegionBox.classList.toggle('noDim', !S.dimOutside);
+    });
+    bindSwitch(el.swMirror, 'mirrorFront', ()=>{
+      CameraMgr.updateMirrorClass();
+      OverlayManager.clearAll();
+    });
+
+    el.ocrModeSelect.addEventListener('change', ()=>{
+      S.ocrMode = el.ocrModeSelect.value;
+      applyRegionVisibility();
+      el.regionToggleBtn.textContent = S.ocrMode === 'region' ? 'Alan: Orta' : 'Alan: Tam Ekran';
+      SettingsMgr.save(S);
+    });
+
+    el.intervalSelect.addEventListener('change', ()=>{
+      S.intervalSec = parseFloat(el.intervalSelect.value) || 2.5;
+      SettingsMgr.save(S);
+      if(S.liveMode && S.cameraOn) startAutoScan();
+    });
+
+    el.confRange.addEventListener('input', ()=>{
+      S.minConfidence = parseInt(el.confRange.value, 10) || 0;
+      el.confVal.textContent = S.minConfidence;
+    });
+    el.confRange.addEventListener('change', ()=>SettingsMgr.save(S));
+
+    // Pencere değişimleri
+    window.addEventListener('resize', ()=>{
+      applyRegionRect();
+      OverlayManager.clearAll();
+    });
+    window.addEventListener('orientationchange', ()=>{
+      setTimeout(()=>{
+        applyRegionRect();
+        OverlayManager.clearAll();
+      }, 250);
+    });
+
+    // Sekme değişiminde pili koru
+    document.addEventListener('visibilitychange', ()=>{
+      if(document.hidden){
+        stopAutoScan();
+      } else if(S.liveMode && S.cameraOn){
+        startAutoScan();
+      }
+    });
+
+    // Kapatma
+    window.addEventListener('beforeunload', ()=>{
+      stopAutoScan();
+      CameraMgr.stopStream();
+      if(S.worker){
+        try{ S.worker.terminate(); }catch(_){}
+      }
+    });
+  }
+
+  /* =========================================================
+   * 16) BAŞLAT
+   * ========================================================= */
+  function init(){
+    attachRegionDrag();
+    applyRegionRect();
+    applySettingsToUI();
+    bindUI();
+
+    if(!isSecureContextOk()){
+      showError('Kamera erişimi için HTTPS bağlantısı kullanın.', 8000);
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', init);
+})();
+</script>
+</body>
+</html>
